@@ -9,7 +9,6 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.annotation.EnableScheduling;
 import org.springframework.scheduling.annotation.Scheduled;
 import jakarta.annotation.PostConstruct;
-
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;

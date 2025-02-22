@@ -7,7 +7,7 @@ import java.time.Instant;
 @Entity
 @Table(name = "tbl_rates")  // Veritabanı tablosunun adı
 public class Rate {
-
+    
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY) // Otomatik artan ID
     private Long id;
@@ -27,7 +27,6 @@ public class Rate {
     @Column(name = "db_updatetime")
     private Instant dbUpdatetime;
 
-    // Constructor, getter ve setter metotları (veya Lombok kullanabilirsiniz)
 
     public Rate() {
     }
