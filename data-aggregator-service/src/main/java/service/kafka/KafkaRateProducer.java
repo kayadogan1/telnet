@@ -16,10 +16,6 @@ public class KafkaRateProducer {
         this.kafkaTemplate = kafkaTemplate;
     }
 
-    @PostConstruct
-    private void test() {
-        System.out.println("🔥 KafkaRateProducer test metodu çalıştı!");
-    }
 
     public void sendRate(Rate rate) {
         String message = rate.toString();

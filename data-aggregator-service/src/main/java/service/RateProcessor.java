@@ -12,43 +12,36 @@ import service.kafka.KafkaRateProducer;
 
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 @Service
 public class RateProcessor {
-    private static final Logger logger = LoggerFactory.getLogger(RateProcessor.class); // SLF4J Kullan
 
+    private static final Logger logger = LoggerFactory.getLogger(RateProcessor.class);
     private final KafkaRateProducer kafkaProducer;
-    private final DateTimeFormatter formatter = DateTimeFormatter.ISO_DATE_TIME;
+
+    // Platformlardan gelen oranları burada tutacağız
+    private final Map<String, List<Rate>> incomingRates = new ConcurrentHashMap<>();
 
     public RateProcessor(KafkaRateProducer kafkaProducer) {
         this.kafkaProducer = kafkaProducer;
-        System.out.println("RateProcessor is working");
     }
 
-
-    @KafkaListener(topics = "forex-rates", groupId = "data-storage-group")
+    @KafkaListener(topics = "forex-rates", groupId = "data-aggregator-group")
     public void listen(ConsumerRecord<String, String> record) {
         try {
             String message = record.value();
-            logger.info("Kafka'dan alınan ham veri: {}", message); // Doğru log formatı
-            System.out.println("📥 Kafka'dan mesaj alındı! İçerik: " + record.value()); // Konsola yazdır
+            logger.info("Kafka'dan gelen veri: {}", message);
             Rate rawRate = parseRate(message);
             if (rawRate != null) {
-                CalculatedRate calculatedRate = calculateDerivedRates(rawRate);
-                kafkaProducer.sendCalculatedRate("forex-rates", rawRate.toString());
-                kafkaProducer.sendCalculatedRate("calculated-rates", calculatedRate.toString());
-                logger.info("Hesaplanan veri kafkaya gönderildi: {}", calculatedRate);
+                handleRate(rawRate);
             }
         } catch (Exception e) {
-            logger.error("Veri işleme hatası: {}", record.value(), e);
+            logger.error("Veri işlenirken hata oluştu: {}", record.value(), e);
         }
-    }
-
-    @PostConstruct
-    public void testKafkaListener() {
-        System.out.println("🔥 Test: Kafka Listener metodunu manuel çağırıyoruz.");
-        listen(new ConsumerRecord<>("forex-rates", 0, 0L, "test-key", "EURTR|1.123|1.456|2025-02-17T18:55:00.809154Z"));
     }
 
     private Rate parseRate(String message) {
@@ -61,21 +54,63 @@ public class RateProcessor {
                 Instant timestamp = Instant.parse(parts[3]);
                 return new Rate(rateName, bid, ask, timestamp);
             } else {
-                logger.warn("Geçersiz veri formatı: {}", message);
+                logger.warn("Geçersiz format: {}", message);
                 return null;
             }
         } catch (Exception e) {
-            logger.error("Veri ayrıştırma hatası: {}", message, e);
+            logger.error("Rate ayrıştırılamadı: {}", message, e);
             return null;
         }
     }
 
-    private CalculatedRate calculateDerivedRates(Rate rawRate) {
-        if (rawRate.getRateName().equals("PF1_USDTRY")) {
-            return new CalculatedRate("USDTRY", rawRate.getBid(), rawRate.getAsk(), rawRate.getTimestamp());
-        } else if (rawRate.getRateName().equals("PF1_EURTRY")) {
-            return new CalculatedRate("EURTRY", rawRate.getBid(), rawRate.getAsk(), rawRate.getTimestamp());
+    private void handleRate(Rate rate) {
+        // PF1_USDTRY → USDTRY
+        String pureName = extractPureRateName(rate.getRateName());
+
+        incomingRates.putIfAbsent(pureName, new ArrayList<>());
+        List<Rate> list = incomingRates.get(pureName);
+
+        // Aynı platformdan gelen tekrar veri varsa güncelle
+        list.removeIf(r -> getPlatform(r.getRateName()).equals(getPlatform(rate.getRateName())));
+        list.add(rate);
+
+        // Yeterli sayıya ulaştıysa hesapla
+        if (list.size() >= 2) {
+            CalculatedRate result = calculateAverage(pureName, list);
+            kafkaProducer.sendCalculatedRate("calculated-rates", result.toString());
+            logger.info("Hesaplanan rate gönderildi: {}", result);
         }
-        return new CalculatedRate(rawRate.getRateName(), rawRate.getBid(), rawRate.getAsk(), rawRate.getTimestamp());
+    }
+
+    private CalculatedRate calculateAverage(String rateName, List<Rate> list) {
+        BigDecimal totalBid = BigDecimal.ZERO;
+        BigDecimal totalAsk = BigDecimal.ZERO;
+
+        for (Rate rate : list) {
+            totalBid = totalBid.add(rate.getBid());
+            totalAsk = totalAsk.add(rate.getAsk());
+        }
+
+        BigDecimal avgBid = totalBid.divide(BigDecimal.valueOf(list.size()), 6, BigDecimal.ROUND_HALF_UP);
+        BigDecimal avgAsk = totalAsk.divide(BigDecimal.valueOf(list.size()), 6, BigDecimal.ROUND_HALF_UP);
+
+        return new CalculatedRate(rateName, avgBid, avgAsk, Instant.now());
+    }
+
+    private String extractPureRateName(String platformRateName) {
+        // PF1_USDTRY → USDTRY
+        int index = platformRateName.indexOf("_");
+        return (index > 0) ? platformRateName.substring(index + 1) : platformRateName;
+    }
+
+    private String getPlatform(String rateName) {
+        // PF1_USDTRY → PF1
+        int index = rateName.indexOf("_");
+        return (index > 0) ? rateName.substring(0, index) : "UNKNOWN";
+    }
+
+    @PostConstruct
+    public void testInit() {
+        System.out.println("✅ RateProcessor hazır.");
     }
 }

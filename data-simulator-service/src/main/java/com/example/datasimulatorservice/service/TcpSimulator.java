@@ -1,35 +1,28 @@
 package com.example.datasimulatorservice.service;
 
 import com.example.datasimulatorservice.model.Rate;
+import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.core.KafkaTemplate;
-import org.springframework.scheduling.annotation.EnableScheduling;
-import org.springframework.scheduling.annotation.Scheduled;
-import jakarta.annotation.PostConstruct;
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.PrintWriter;
+
+import java.io.*;
+import java.math.BigDecimal;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Map;
-import java.util.HashMap;
 import java.util.Random;
-import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.*;
 
 @Configuration
-@EnableScheduling
 public class TcpSimulator {
 
     private static final Logger logger = LoggerFactory.getLogger(TcpSimulator.class);
     private final KafkaTemplate<String, String> kafkaTemplate;
     private int port;
-    private final Map<String, Boolean> subscriptions = new HashMap<>();
 
     @Value("${tcp.server.port:8082}")
     public void setPort(int port) {
@@ -59,6 +52,8 @@ public class TcpSimulator {
         private final Socket clientSocket;
         private PrintWriter out;
         private BufferedReader in;
+        private final Map<String, Boolean> localSubscriptions = new ConcurrentHashMap<>();
+        private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
 
         public ClientHandler(Socket socket) {
             this.clientSocket = socket;
@@ -69,15 +64,19 @@ public class TcpSimulator {
             try {
                 out = new PrintWriter(clientSocket.getOutputStream(), true);
                 in = new BufferedReader(new InputStreamReader(clientSocket.getInputStream()));
-                String inputLine;
 
+                startBroadcastLoop();
+
+                String inputLine;
                 while ((inputLine = in.readLine()) != null) {
                     logger.info("Client'tan gelen istek: {}", inputLine);
                     processCommand(inputLine);
                 }
+
             } catch (IOException e) {
                 logger.error("Client hatası: ", e);
             } finally {
+                scheduler.shutdownNow(); // bu metod ScheduledExecutorService içinde var
                 try {
                     if (out != null) out.close();
                     if (in != null) in.close();
@@ -96,9 +95,11 @@ public class TcpSimulator {
                 case "subscribe":
                     if (parts.length == 2) {
                         String rateName = parts[1];
-                        if (!subscriptions.containsKey(rateName)) {
-                            subscriptions.put(rateName, true);
+                        if (!localSubscriptions.containsKey(rateName)) {
+                            localSubscriptions.put(rateName, true);
+                            Rate rate = generateRandomRate(rateName);
                             out.println("Subscribed to " + rateName);
+                            out.println(formatRate(rate));
                             logger.info("Abone olunan oran: {}", rateName);
                         } else {
                             out.println("Already subscribed to " + rateName);
@@ -110,8 +111,8 @@ public class TcpSimulator {
                 case "unsubscribe":
                     if (parts.length == 2) {
                         String rateName = parts[1];
-                        if (subscriptions.containsKey(rateName)) {
-                            subscriptions.remove(rateName);
+                        if (localSubscriptions.containsKey(rateName)) {
+                            localSubscriptions.remove(rateName);
                             out.println("Unsubscribed from " + rateName);
                             logger.info("Abonelikten çıkılan oran: {}", rateName);
                         } else {
@@ -125,22 +126,26 @@ public class TcpSimulator {
                     out.println("ERROR|Invalid command");
             }
         }
-    }
 
-    @Scheduled(fixedRate = 1000)
-    public void sendData() {
-        for (String rateName : subscriptions.keySet()) {
-            if (subscriptions.get(rateName)) {
-                Rate rate = generateRandomRate(rateName);
-                String message = rate.toString();
+        private void startBroadcastLoop() {
+            scheduler.scheduleAtFixedRate(() -> {
+                for (Map.Entry<String, Boolean> entry : localSubscriptions.entrySet()) {
+                    if (entry.getValue()) {
+                        String rateName = entry.getKey();
+                        Rate rate = generateRandomRate(rateName);
+                        String message = formatRate(rate);
 
-                CompletableFuture<Void> future = kafkaTemplate.send("forex-rates", message)
-                        .thenAccept(result -> logger.info("Kafka'ya gönderildi: {}", message))
-                        .exceptionally(ex -> {
-                            logger.error("Kafka'ya gönderilemedi: {}", message, ex);
-                            return null;
-                        });
-            }
+                        out.println(message);
+                        kafkaTemplate.send("forex-rates", message);
+                    }
+                }
+            }, 0, 1, TimeUnit.SECONDS);
+        }
+
+        private String formatRate(Rate rate) {
+            return rate.getRateName() + "|22:number:" + rate.getBid()
+                    + "|25:number:" + rate.getAsk()
+                    + "|5:timestamp:" + rate.getTimestamp();
         }
     }
 

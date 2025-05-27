@@ -1,0 +1,22 @@
+{
+  "rates": [
+    {
+      "name": "PF1_USDTRY",
+      "bid": 34.40,
+      "ask": 35.40,
+      "fluctuation": 0.05
+    },
+    {
+      "name": "PF1_EURUSD",
+      "bid": 1.06,
+      "ask": 1.08,
+      "fluctuation": 0.01
+    },
+    {
+      "name": "PF1_GBPUSD",
+      "bid": 1.25,
+      "ask": 1.26,
+      "fluctuation": 0.015
+    }
+  ]
+}
